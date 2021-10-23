@@ -5,7 +5,6 @@ import paddle
 import paddle.nn as nn
 import paddle.nn.functional as F
 import paddle.optimizer as optim
-from paddle.optim import lr_scheduler
 from paddle.vision import datasets  , transforms
 from tensorboardX import SummaryWriter
 from utils import * 
@@ -38,7 +37,7 @@ parser.add_argument('-l', '--lr', type=float,
                     default=0.0002, help='Base learning rate')
 parser.add_argument('-e', '--lr_decay', type=float, default=0.999995,
                     help='Learning rate decay, applied every step of the optimization')
-parser.add_argument('-b', '--batch_size', type=int, default=64,
+parser.add_argument('-b', '--batch_size', type=int, default=32,
                     help='Batch size during training per GPU')
 parser.add_argument('-x', '--max_epochs', type=int,
                     default=5000, help='How many epochs to run in total?')
@@ -46,14 +45,16 @@ parser.add_argument('-s', '--seed', type=int, default=1,
                     help='Random seed to use')
 args = parser.parse_args()
 
-device = paddle.device.set_device('cuda:0')
+device = paddle.device.set_device('gpu:0')
 
 # reproducibility
 paddle.seed(args.seed)
 np.random.seed(args.seed)
 
 model_name = 'pcnn_lr:{:.5f}_nr-resnet{}_nr-filters{}'.format(args.lr, args.nr_resnet, args.nr_filters)
-assert not os.path.exists(os.path.join('runs', model_name)), '{} already exists!'.format(model_name)
+# assert not os.path.exists(os.path.join('runs', model_name)), '{} already exists!'.format(model_name)
+if not os.path.exists(os.path.join('runs', model_name)):
+    print('{} already exists!'.format(model_name))
 writer = SummaryWriter(log_dir=os.path.join('runs', model_name))
 
 sample_batch_size = 25
@@ -61,8 +62,11 @@ obs = (1, 28, 28) if 'mnist' in args.dataset else (3, 32, 32)
 input_channels = obs[0]
 rescaling     = lambda x : (x - .5) * 2.
 rescaling_inv = lambda x : .5 * x  + .5
-kwargs = {'num_workers':1, 'pin_memory':True, 'drop_last':True}
+kwargs = {'num_workers':0 , 'drop_last':True} #'pin_memory':True
 ds_transforms = transforms.Compose([transforms.ToTensor(), rescaling])
+
+if not os.path.exists(args.data_dir):
+    os.mkdir(args.data_dir)
 
 if 'mnist' in args.dataset : 
     train_loader = paddle.io.DataLoader(datasets.MNIST(args.data_dir, download=True, 
@@ -76,16 +80,20 @@ if 'mnist' in args.dataset :
     sample_op = lambda x : sample_from_discretized_mix_logistic_1d(x, args.nr_logistic_mix)
 
 elif 'cifar' in args.dataset : 
-    train_loader = paddle.io.DataLoader(datasets.CIFAR10(args.data_dir, train=True, 
+    # normalize = transforms.Normalize(mean=[0.5, 0.5, 0.5],
+    #                 std=[0.5, 0.5, 0.5],
+    #                 data_format='HWC')
+    # cifar10 = datasets.Cifar10(mode='train', transform=normalize)
+    train_loader = paddle.io.DataLoader(datasets.Cifar10( mode = 'train', 
         download=True, transform=ds_transforms), batch_size=args.batch_size, shuffle=True, **kwargs)
     
-    test_loader  = paddle.io.DataLoader(datasets.CIFAR10(args.data_dir, train=False, 
+    test_loader  = paddle.io.DataLoader(datasets.Cifar10( mode = 'test', 
                     transform=ds_transforms), batch_size=args.batch_size, shuffle=True, **kwargs)
     
     loss_op   = lambda real, fake : discretized_mix_logistic_loss(real, fake)
     sample_op = lambda x : sample_from_discretized_mix_logistic(x, args.nr_logistic_mix)
 else :
-    raise Exception('{} dataset not in {mnist, cifar10}'.format(args.dataset))
+    raise Exception('{} dataset not in {mnist, Cifar10}'.format(args.dataset))
 
 model = PixelCNN(nr_resnet=args.nr_resnet, nr_filters=args.nr_filters, 
             input_channels=input_channels, nr_logistic_mix=args.nr_logistic_mix)
@@ -102,7 +110,8 @@ scheduler = paddle.optimizer.lr.StepDecay(learning_rate=args.lr, step_size=1, ga
 optimizer = optim.Adam(learning_rate=scheduler, parameters=model.parameters())
 
 def sample(model):
-    model.train(False)
+    # model.train(False)
+    model.train()
     data = paddle.zeros(sample_batch_size, obs[0], obs[1], obs[2])
     # data = data.cuda()
     for i in range(obs[1]):
@@ -122,7 +131,8 @@ def sample(model):
 print('starting training')
 writes = 0
 for epoch in range(args.max_epochs):
-    model.train(True)
+    # model.train(True)
+    # model.train()
     # torch.cuda.synchronize()
     train_loss = 0.
     time_ = time.time()
@@ -132,13 +142,14 @@ for epoch in range(args.max_epochs):
         # input = Variable(input)
         input = paddle.create_parameter(shape=input.shape,
                         dtype=str(input.numpy().dtype),
-                        default_initializer=paddle.nn.initializer.Assign(input))
+                        default_initializer=paddle.nn.initializer.Assign(input))   
         output = model(input)
         loss = loss_op(input, output)
         optimizer.clear_grad()
         loss.backward()
         optimizer.step()
-        train_loss += loss.data
+        train_loss += loss.detach().cpu().numpy()[0]
+
         if (batch_idx +1) % args.print_every == 0 : 
             deno = args.print_every * args.batch_size * np.prod(obs) * np.log(2.)
             writer.add_scalar('train/bpd', (train_loss / deno), writes)
@@ -164,13 +175,18 @@ for epoch in range(args.max_epochs):
                         default_initializer=paddle.nn.initializer.Assign(input))
         output = model(input_var)
         loss = loss_op(input_var, output)
-        test_loss += loss.data
+        test_loss += loss.detach().cpu().numpy()[0]
         del loss, output
 
     deno = batch_idx * args.batch_size * np.prod(obs) * np.log(2.)
     writer.add_scalar('test/bpd', (test_loss / deno), writes)
     print('test loss : %s' % (test_loss / deno))
-    
+
+    if not os.path.exists('models'):
+        os.mkdir('models')
+    if not os.path.exists('images'):
+        os.mkdir('images')
+
     if (epoch + 1) % args.save_interval == 0: 
         paddle.save(model.state_dict(), 'models/{}_{}.pdparams'.format(model_name, epoch))
         print('sampling...')

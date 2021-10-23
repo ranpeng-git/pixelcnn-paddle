@@ -11,55 +11,58 @@ import numpy as np
 def concat_elu(x):
     """ like concatenated ReLU (http://arxiv.org/abs/1603.05201), but then with ELU """
     # Pytorch ordering
-    axis = len(x.size()) - 3
-    return F.elu(paddle.concat([x, -x], dim=axis))
+    axis = len(x.shape) - 3
+    return F.elu(paddle.concat([x, -x], axis=axis))
 
 
 def log_sum_exp(x):
     """ numerically stable log_sum_exp implementation that prevents overflow """
     # TF ordering
-    axis  = len(x.size()) - 1
-    m, _  = paddle.max(x, dim=axis)
-    m2, _ = paddle.max(x, dim=axis, keepdim=True)
-    return m + paddle.log(paddle.sum(paddle.exp(x - m2), dim=axis))
+    axis  = len(x.shape) - 1
+    m = paddle.max(x, axis=axis)
+    m2 = paddle.max(x, axis=axis, keepdim=True)
+    return m + paddle.log(paddle.sum(paddle.exp(x - m2), axis=axis))
 
 
 def log_prob_from_logits(x):
     """ numerically stable log_softmax implementation that prevents overflow """
     # TF ordering
-    axis = len(x.size()) - 1
-    m, _ = paddle.max(x, dim=axis, keepdim=True)
-    return x - m - paddle.log(paddle.sum(paddle.exp(x - m), dim=axis, keepdim=True))
+    axis = len(x.shape) - 1
+    m = paddle.max(x, axis=axis, keepdim=True)
+    return x - m - paddle.log(paddle.sum(paddle.exp(x - m), axis=axis, keepdim=True))
 
 
 def discretized_mix_logistic_loss(x, l):
     """ log-likelihood for mixture of discretized logistics, assumes the data has been rescaled to [-1,1] interval """
-    # Pytorch ordering
-    x = x.permute(0, 2, 3, 1)
-    l = l.permute(0, 2, 3, 1)
-    xs = [int(y) for y in x.size()]
-    ls = [int(y) for y in l.size()]
+    x = paddle.transpose(x , perm = [0,2,3,1])
+    l = paddle.transpose(l , perm = [0,2,3,1])
+    xs = [int(y) for y in x.shape]
+    ls = [int(y) for y in l.shape]
    
     # here and below: unpacking the params of the mixture of logistics
     nr_mix = int(ls[-1] / 10) 
     logit_probs = l[:, :, :, :nr_mix]
-    l = l[:, :, :, nr_mix:].contiguous().view(xs + [nr_mix * 3]) # 3 for mean, scale, coef
+    l =  paddle.reshape(l[:, :, :, nr_mix:] , xs + [nr_mix * 3])
     means = l[:, :, :, :, :nr_mix]
-    # log_scales = torch.max(l[:, :, :, :, nr_mix:2 * nr_mix], -7.)
     log_scales = paddle.clip(l[:, :, :, :, nr_mix:2 * nr_mix], min=-7.)
    
     coeffs = F.tanh(l[:, :, :, :, 2 * nr_mix:3 * nr_mix])
     # here and below: getting the means and adjusting them based on preceding
     # sub-pixels
-    x = x.contiguous()
-    x = x.unsqueeze(-1) + paddle.to_tensor(paddle.zeros(xs + [nr_mix]).cuda(), requires_grad=False)
-    m2 = (means[:, :, :, 1, :] + coeffs[:, :, :, 0, :]
-                * x[:, :, :, 0, :]).view(xs[0], xs[1], xs[2], 1, nr_mix)
+    data = paddle.zeros(xs + [nr_mix])
+    data = paddle.create_parameter(shape=data.shape,
+                        dtype=str(data.numpy().dtype),
+                        default_initializer=paddle.nn.initializer.Assign(data))
+    data.stop_gradients = True
+    x = paddle.unsqueeze(x , -1) + data
 
-    m3 = (means[:, :, :, 2, :] + coeffs[:, :, :, 1, :] * x[:, :, :, 0, :] +
-                coeffs[:, :, :, 2, :] * x[:, :, :, 1, :]).view(xs[0], xs[1], xs[2], 1, nr_mix)
+    m2 = paddle.reshape(means[:, :, :, 1, :] + coeffs[:, :, :, 0, :]
+                * x[:, :, :, 0, :] , [xs[0], xs[1], xs[2], 1, nr_mix])
 
-    means = paddle.concat((means[:, :, :, 0, :].unsqueeze(3), m2, m3), dim=3)
+    m3 = paddle.reshape(means[:, :, :, 2, :] + coeffs[:, :, :, 1, :] * x[:, :, :, 0, :] +
+                coeffs[:, :, :, 2, :] * x[:, :, :, 1, :] , [xs[0], xs[1], xs[2], 1, nr_mix])
+
+    means = paddle.concat((paddle.unsqueeze(means[:, :, :, 0, :] ,3), m2, m3), axis=3)
     centered_x = x - means
     inv_stdv = paddle.exp(-log_scales)
     plus_in = inv_stdv * (centered_x + 1. / 255.)
@@ -89,13 +92,13 @@ def discretized_mix_logistic_loss(x, l):
     # based on the assumption that the log-density is constant in the bin of
     # the observed sub-pixel value
     
-    inner_inner_cond = (cdf_delta > 1e-5).float()
-    inner_inner_out  = inner_inner_cond * paddle.log(paddle.clamp(cdf_delta, min=1e-12)) + (1. - inner_inner_cond) * (log_pdf_mid - np.log(127.5))
-    inner_cond       = (x > 0.999).float()
+    inner_inner_cond = paddle.cast(cdf_delta > 1e-5 , 'float32')
+    inner_inner_out  = inner_inner_cond * paddle.log(paddle.clip(cdf_delta, min=1e-12)) + (1. - inner_inner_cond) * (log_pdf_mid - np.log(127.5))
+    inner_cond       = paddle.cast(x > 0.999 , 'float32')
     inner_out        = inner_cond * log_one_minus_cdf_min + (1. - inner_cond) * inner_inner_out
-    cond             = (x < -0.999).float()
+    cond             = paddle.cast(x < -0.999 , 'float32')
     log_probs        = cond * log_cdf_plus + (1. - cond) * inner_out
-    log_probs        = paddle.sum(log_probs, dim=3) + log_prob_from_logits(logit_probs)
+    log_probs        = paddle.sum(log_probs, axis=3) + log_prob_from_logits(logit_probs)
     
     return -paddle.sum(log_sum_exp(log_probs))
 
@@ -103,15 +106,18 @@ def discretized_mix_logistic_loss(x, l):
 def discretized_mix_logistic_loss_1d(x, l):
     """ log-likelihood for mixture of discretized logistics, assumes the data has been rescaled to [-1,1] interval """
     # Pytorch ordering
-    x = x.permute(0, 2, 3, 1)
-    l = l.permute(0, 2, 3, 1)
-    xs = [int(y) for y in x.size()]
-    ls = [int(y) for y in l.size()]
+    # x = x.permute(0, 2, 3, 1)
+    x = paddle.transpose(x , perm = [0,2,3,1])
+    # l = l.permute(0, 2, 3, 1)
+    l = paddle.transpose(l, perm = [0,2,3,1])
+    xs = [int(y) for y in x.shape]
+    ls = [int(y) for y in l.shape]
 
     # here and below: unpacking the params of the mixture of logistics
     nr_mix = int(ls[-1] / 3)
     logit_probs = l[:, :, :, :nr_mix]
-    l = l[:, :, :, nr_mix:].contiguous().view(xs + [nr_mix * 2]) # 2 for mean, scale
+    # l = l[:, :, :, nr_mix:].contiguous().view(xs + [nr_mix * 2]) # 2 for mean, scale
+    l = paddle.reshape(l[:, :, :, nr_mix:] , xs + [nr_mix * 2])
     means = l[:, :, :, :, :nr_mix]
     log_scales = paddle.clip(l[:, :, :, :, nr_mix:2 * nr_mix], min=-7.)
     # here and below: getting the means and adjusting them based on preceding
@@ -136,50 +142,53 @@ def discretized_mix_logistic_loss_1d(x, l):
     # (not actually used in our code)
     log_pdf_mid = mid_in - log_scales - 2. * F.softplus(mid_in)
     
-    inner_inner_cond = (cdf_delta > 1e-5).float()
+    inner_inner_cond = paddle.cast(cdf_delta > 1e-5 ,'float32')
     inner_inner_out  = inner_inner_cond * paddle.log(paddle.clip(cdf_delta, min=1e-12)) + (1. - inner_inner_cond) * (log_pdf_mid - np.log(127.5))
-    inner_cond       = (x > 0.999).float()
+    inner_cond       = paddle.cast(x > 0.999 ,'float32')
     inner_out        = inner_cond * log_one_minus_cdf_min + (1. - inner_cond) * inner_inner_out
-    cond             = (x < -0.999).float()
+    cond             = paddle.cast(x < -0.999 , 'float32')
     log_probs        = cond * log_cdf_plus + (1. - cond) * inner_out
-    log_probs        = paddle.sum(log_probs, dim=3) + log_prob_from_logits(logit_probs)
+    log_probs        = paddle.sum(log_probs, axis=3) + log_prob_from_logits(logit_probs)
     
     return -paddle.sum(log_sum_exp(log_probs))
 
 
 def to_one_hot(tensor, n, fill_with=1.):
     # we perform one hot encore with respect to the last axis
-    one_hot = paddle.(tensor.size() + (n,)).zero_()
-    if tensor.is_cuda : one_hot = one_hot.cuda()
-    one_hot.scatter_(len(tensor.size()), tensor.unsqueeze(-1), fill_with)
+    one_hot = paddle.to_tensor(tensor.shape + (n,)).zero_()
+    # if tensor.is_cuda : one_hot = one_hot.cuda()
+    one_hot.scatter_(len(tensor.shape), tensor.unsqueeze(-1), fill_with)
     return paddle.to_tensor(one_hot)
 
 
 def sample_from_discretized_mix_logistic_1d(l, nr_mix):
     # Pytorch ordering
     l = l.permute(0, 2, 3, 1)
-    ls = [int(y) for y in l.size()]
+    ls = [int(y) for y in l.shape]
     xs = ls[:-1] + [1] #[3]
 
     # unpack parameters
     logit_probs = l[:, :, :, :nr_mix]
-    l = l[:, :, :, nr_mix:].contiguous().view(xs + [nr_mix * 2]) # for mean, scale
+    # l = l[:, :, :, nr_mix:].contiguous().view(xs + [nr_mix * 2]) # for mean, scale
+    l = paddle.reshape(l[:, :, :, nr_mix:] , xs + [nr_mix * 2])
 
     # sample mixture indicator from softmax
-    temp = paddle.to_tensor(logit_probs.size())
-    if l.is_cuda : temp = temp.cuda()
+    temp = paddle.to_tensor(logit_probs.shape)
+    # if l.is_cuda : temp = temp.cuda()
     temp.uniform_(1e-5, 1. - 1e-5)
     temp = logit_probs.data - paddle.log(- paddle.log(temp))
-    _, argmax = temp.max(dim=3)
+    _, argmax = temp.max(axis=3)
    
     one_hot = to_one_hot(argmax, nr_mix)
-    sel = one_hot.view(xs[:-1] + [1, nr_mix])
+    # sel = one_hot.view(xs[:-1] + [1, nr_mix])
+    sel = paddle.reshape(one_hot , xs[:-1] + [1, nr_mix] )
+
     # select logistic parameters
-    means = paddle.sum(l[:, :, :, :, :nr_mix] * sel, dim=4) 
+    means = paddle.sum(l[:, :, :, :, :nr_mix] * sel, axis=4) 
     log_scales = paddle.clip(paddle.sum(
-        l[:, :, :, :, nr_mix:2 * nr_mix] * sel, dim=4), min=-7.)
-    u = paddle.to_tensor(means.size())
-    if l.is_cuda : u = u.cuda()
+        l[:, :, :, :, nr_mix:2 * nr_mix] * sel, axis=4), min=-7.)
+    u = paddle.to_tensor(means.shape)
+    # if l.is_cuda : u = u.cuda()
     u.uniform_(1e-5, 1. - 1e-5)
     u = paddle.to_tensor(u)
     x = means + paddle.exp(log_scales) * (paddle.log(u) - paddle.log(1. - u))
@@ -191,43 +200,48 @@ def sample_from_discretized_mix_logistic_1d(l, nr_mix):
 def sample_from_discretized_mix_logistic(l, nr_mix):
     # Pytorch ordering
     l = l.permute(0, 2, 3, 1)
-    ls = [int(y) for y in l.size()]
+    ls = [int(y) for y in l.shape]
     xs = ls[:-1] + [3]
 
     # unpack parameters
     logit_probs = l[:, :, :, :nr_mix]
-    l = l[:, :, :, nr_mix:].contiguous().view(xs + [nr_mix * 3])
+    # l = l[:, :, :, nr_mix:].contiguous().view(xs + [nr_mix * 3])
+    l =paddle.reshape(l[:, :, :, nr_mix:] ,xs + [nr_mix * 3] )
     # sample mixture indicator from softmax
-    temp = paddle.to_tensr(logit_probs.size())
-    if l.is_cuda : temp = temp.cuda()
+    temp = paddle.to_tensr(logit_probs.shape)
+    # if l.is_cuda : temp = temp.cuda()
     temp.uniform_(1e-5, 1. - 1e-5)
     temp = logit_probs.data - paddle.log(- paddle.log(temp))
-    _, argmax = temp.max(dim=3)
+    _, argmax = temp.max(axis=3)
    
     one_hot = to_one_hot(argmax, nr_mix)
-    sel = one_hot.view(xs[:-1] + [1, nr_mix])
+    # sel = one_hot.view(xs[:-1] + [1, nr_mix])
+    sel = paddle.reshape(one_hot ,xs[:-1] + [1, nr_mix] )
     # select logistic parameters
-    means = paddle.sum(l[:, :, :, :, :nr_mix] * sel, dim=4) 
+    means = paddle.sum(l[:, :, :, :, :nr_mix] * sel, axis=4) 
     log_scales = paddle.clip(paddle.sum(
-        l[:, :, :, :, nr_mix:2 * nr_mix] * sel, dim=4), min=-7.)
+        l[:, :, :, :, nr_mix:2 * nr_mix] * sel, axis=4), min=-7.)
     coeffs = paddle.sum(F.tanh(
-        l[:, :, :, :, 2 * nr_mix:3 * nr_mix]) * sel, dim=4)
+        l[:, :, :, :, 2 * nr_mix:3 * nr_mix]) * sel, axis=4)
     # sample from logistic & clip to interval
     # we don't actually round to the nearest 8bit value when sampling
-    u = paddle.to_tensor(means.size())
-    if l.is_cuda : u = u.cuda()
-    u.uniform_(1e-5, 1. - 1e-5)
+    u = paddle.to_tensor(means.shape)
+    # if l.is_cuda : u = u.cuda()
+    # u.uniform_(1e-5, 1. - 1e-5)
+    u = paddle.uniform(u , min =1e-5 , max= 1. - 1e-5 )
     u = paddle.to_tensor(u)
     x = means + paddle.exp(log_scales) * (paddle.log(u) - paddle.log(1. - u))
     x0 = paddle.clip(paddle.clip(x[:, :, :, 0], min=-1.), max=1.)
     x1 = paddle.clip(paddle.clip(
        x[:, :, :, 1] + coeffs[:, :, :, 0] * x0, min=-1.), max=1.)
-    x2 = paddle.clamp(paddle.clip(
+    x2 = paddle.clip(paddle.clip(
        x[:, :, :, 2] + coeffs[:, :, :, 1] * x0 + coeffs[:, :, :, 2] * x1, min=-1.), max=1.)
 
-    out = paddle.concat([x0.view(xs[:-1] + [1]), x1.view(xs[:-1] + [1]), x2.view(xs[:-1] + [1])], dim=3)
+    # out = paddle.concat([x0.view(xs[:-1] + [1]), x1.view(xs[:-1] + [1]), x2.view(xs[:-1] + [1])], axis=3)
+    out = paddle.concat([paddle.reshape(x0 , xs[:-1] + [1]), paddle.reshape(x1 , xs[:-1] + [1]), paddle.reshape(x2 , xs[:-1] + [1])], axis=3)
     # put back in Pytorch ordering
-    out = out.permute(0, 3, 1, 2)
+    # out = out.permute(0, 3, 1, 2)
+    out = paddle.transpose(out , perm = [0,3,1,2])
     return out
 
 
@@ -235,21 +249,21 @@ def sample_from_discretized_mix_logistic(l, nr_mix):
 ''' utilities for shifting the image around, efficient alternative to masking convolutions '''
 def down_shift(x, pad=None):
     # Pytorch ordering
-    xs = [int(y) for y in x.size()]
+    xs = [int(y) for y in x.shape]
     # when downshifting, the last row is removed 
     x = x[:, :, :xs[2] - 1, :]
     # padding left, padding right, padding top, padding bottom
-    pad = nn.Pad2D(padding=pad_bottom,mode="constant") if pad is None else pad
+    pad = nn.Pad2D(padding=[0, 0, 1, 0],mode="constant") if pad is None else pad
     return pad(x)
 
 
 def right_shift(x, pad=None):
     # Pytorch ordering
-    xs = [int(y) for y in x.size()]
+    xs = [int(y) for y in x.shape]
     # when righshifting, the last column is removed 
     x = x[:, :, :, :xs[3] - 1]
     # padding left, padding right, padding top, padding bottom
-    pad = nn.Pad2D(padding=pad_right,mode="constant") if pad is None else pad
+    pad = nn.Pad2D(padding=[1, 0, 0, 0],mode="constant") if pad is None else pad
     return pad(x)
 
 def load_part_of_model(model, path):

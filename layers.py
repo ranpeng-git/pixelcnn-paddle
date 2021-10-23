@@ -7,13 +7,13 @@ import paddle.nn.functional as F
 # import torch.nn as nn
 # import torch.nn.functional as F
 # from torch.autograd import Variable
-# from torch.nn.utils import weight_norm as wn
+from paddle.nn.utils import weight_norm as wn
 import numpy as np
 
 class nin(nn.Layer):
     def __init__(self, dim_in, dim_out):
         super(nin, self).__init__()
-        self.lin_a = nn.utils.weight_norm(nn.Linear(dim_in, dim_out))
+        self.lin_a = wn(nn.Linear(dim_in, dim_out))
         self.dim_out = dim_out
     
     def forward(self, x):
@@ -21,12 +21,16 @@ class nin(nn.Layer):
         # assumes pytorch ordering
         """ a network in network layer (1x1 CONV) """
         # TODO : try with original ordering
-        x = x.permute(0, 2, 3, 1)
-        shp = [int(y) for y in x.size()]
-        out = self.lin_a(x.contiguous().view(shp[0]*shp[1]*shp[2], shp[3]))
+        # x = x.permute(0, 2, 3, 1)
+        x = paddle.transpose(x , perm = [0, 2, 3, 1] )
+        shp = [int(y) for y in x.shape]
+        # out = self.lin_a(x.contiguous().view(shp[0]*shp[1]*shp[2], shp[3]))
+        out = self.lin_a(paddle.reshape(x , [shp[0]*shp[1]*shp[2], shp[3]])) #.contiguous()
         shp[-1] = self.dim_out
-        out = out.view(shp)
-        return out.permute(0, 3, 1, 2)
+        # out = out.view(shp)
+        out = paddle.reshape(out , shp)
+        # return out.permute(0, 3, 1, 2)
+        return paddle.transpose(out , perm = [0,3,1,2])
 
 
 class down_shifted_conv2d(nn.Layer):
@@ -44,7 +48,7 @@ class down_shifted_conv2d(nn.Layer):
                                   0] , mode='constant')                           # pad down
         
         if norm == 'weight_norm':
-            self.conv = nn.utils.weight_norm(self.conv)
+            self.conv = wn(self.conv)
         elif norm == 'batch_norm':
             self.bn = nn.BatchNorm2D(num_filters_out)
 
@@ -53,22 +57,23 @@ class down_shifted_conv2d(nn.Layer):
     
     def forward(self, x):
         x = self.pad(x)
-        x = self.conv(x)
+        x = self.conv(x)        
         x = self.bn(x) if self.norm == 'batch_norm' else x
-        return self.down_shift(x) if self.shift_output_down else x
+        # return self.down_shift(x) if self.shift_output_down else x
+        return x
 
 
 class down_shifted_deconv2d(nn.Layer):
     def __init__(self, num_filters_in, num_filters_out, filter_size=(2,3), stride=(1,1)):
         super(down_shifted_deconv2d, self).__init__()
-        self.deconv = nn.utils.weight_norm(nn.Conv2DTranspose(num_filters_in, num_filters_out, filter_size, stride,
+        self.deconv = wn(nn.Conv2DTranspose(num_filters_in, num_filters_out, filter_size, stride,
                                             output_padding=1))
         self.filter_size = filter_size
         self.stride = stride
 
     def forward(self, x):
         x = self.deconv(x)
-        xs = [int(y) for y in x.size()]
+        xs = [int(y) for y in x.shape]
         return x[:, :, :(xs[2] - self.filter_size[0] + 1), 
                  int((self.filter_size[1] - 1) / 2):(xs[3] - int((self.filter_size[1] - 1) / 2))]
 
@@ -85,7 +90,7 @@ class down_right_shifted_conv2d(nn.Layer):
         self.norm = norm
 
         if norm == 'weight_norm':
-            self.conv = nn.utils.weight_norm(self.conv)
+            self.conv = wn(self.conv)
         elif norm == 'batch_norm':
             self.bn = nn.BatchNorm2D(num_filters_out)
 
@@ -103,14 +108,14 @@ class down_right_shifted_deconv2d(nn.Layer):
     def __init__(self, num_filters_in, num_filters_out, filter_size=(2,2), stride=(1,1), 
                     shift_output_right=False):
         super(down_right_shifted_deconv2d, self).__init__()
-        self.deconv = nn.utils.weight_norm(nn.Conv2DTranspose(num_filters_in, num_filters_out, filter_size,
+        self.deconv = wn(nn.Conv2DTranspose(num_filters_in, num_filters_out, filter_size,
                                                 stride, output_padding=1))
         self.filter_size = filter_size
         self.stride = stride
 
     def forward(self, x):
         x = self.deconv(x)
-        xs = [int(y) for y in x.size()]
+        xs = [int(y) for y in x.shape]
         x = x[:, :, :(xs[2] - self.filter_size[0] + 1):, :(xs[3] - self.filter_size[1] + 1)]
         return x
 
