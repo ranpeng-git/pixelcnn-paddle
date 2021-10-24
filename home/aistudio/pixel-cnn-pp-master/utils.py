@@ -21,7 +21,7 @@ def log_sum_exp(x):
     axis  = len(x.shape) - 1
     m = paddle.max(x, axis=axis)
     m2 = paddle.max(x, axis=axis, keepdim=True)
-    return m + paddle.log(paddle.sum(paddle.exp(x - m2), axis=axis))
+    return m + paddle.log(paddle.sum(paddle.exp(x - m2), axis=axis) + 1e-5)
 
 
 def log_prob_from_logits(x):
@@ -29,7 +29,7 @@ def log_prob_from_logits(x):
     # TF ordering
     axis = len(x.shape) - 1
     m = paddle.max(x, axis=axis, keepdim=True)
-    return x - m - paddle.log(paddle.sum(paddle.exp(x - m), axis=axis, keepdim=True))
+    return x - m - paddle.log(paddle.sum(paddle.exp(x - m), axis=axis, keepdim=True) + 1e-5)
 
 
 def discretized_mix_logistic_loss(x, l):
@@ -37,6 +37,7 @@ def discretized_mix_logistic_loss(x, l):
     # Pytorch ordering
     # x = x.permute(0, 2, 3, 1)
     x = paddle.transpose(x , perm = [0,2,3,1])
+    #print(x.is_contiguous(),'xxxxxxxxxxxxxxxxxxxxxxxxxxxxx')
     # l = l.permute(0, 2, 3, 1)
     l = paddle.transpose(l , perm = [0,2,3,1])
     xs = [int(y) for y in x.shape]
@@ -61,7 +62,8 @@ def discretized_mix_logistic_loss(x, l):
                         default_initializer=paddle.nn.initializer.Assign(data))
     data.stop_gradients = True
     x = x.unsqueeze(-1) + data
-    # x = x.unsqueeze(-1) + paddle.to_tensor(paddle.zeros(xs + [nr_mix]), requires_grad=False)
+    ################################改一改
+    #x = x.unsqueeze(-1) + paddle.to_tensor(paddle.zeros(xs + [nr_mix]), stop_gradient=True)
     # m2 = (means[:, :, :, 1, :] + coeffs[:, :, :, 0, :]
     #             * x[:, :, :, 0, :]).view(xs[0], xs[1], xs[2], 1, nr_mix)
     m2 = paddle.reshape(means[:, :, :, 1, :] + coeffs[:, :, :, 0, :]
@@ -118,8 +120,10 @@ def discretized_mix_logistic_loss_1d(x, l):
     # Pytorch ordering
     # x = x.permute(0, 2, 3, 1)
     x = paddle.transpose(x , perm = [0,2,3,1])
+    #print(x.is_contiguous(),'xxxxxxxxxxxxxxxxxxxxxxxxxxxxx')
     # l = l.permute(0, 2, 3, 1)
     l = paddle.transpose(l, perm = [0,2,3,1])
+    #print(l.is_contiguous(),'xxxxxxxxxxxxxxxxxxxxxxxxxxxxx')
     xs = [int(y) for y in x.shape]
     ls = [int(y) for y in l.shape]
 
@@ -133,7 +137,8 @@ def discretized_mix_logistic_loss_1d(x, l):
     # here and below: getting the means and adjusting them based on preceding
     # sub-pixels
     x = x.contiguous()
-    x = x.unsqueeze(-1) + paddle.to_tensor(paddle.zeros(xs + [nr_mix]).cuda(), requires_grad=False)
+    #x = x.unsqueeze(-1) + paddle.to_tensor(paddle.zeros(xs + [nr_mix]).cuda(), requires_grad=False)
+    x = x.unsqueeze(-1) + paddle.to_tensor(paddle.zeros(xs + [nr_mix]), stop_gradient=True)
 
     # means = torch.cat((means[:, :, :, 0, :].unsqueeze(3), m2, m3), dim=3)
     centered_x = x - means

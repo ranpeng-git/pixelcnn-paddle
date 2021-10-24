@@ -7,9 +7,6 @@ from layers import *
 from utils import * 
 import numpy as np
 
-from reprod_log import ReprodLogger
-reprod_logger = ReprodLogger()
-
 #print(paddle.__version__)
 class PixelCNNLayer_up(nn.Layer):
     def __init__(self, nr_resnet, nr_filters, resnet_nonlinearity):
@@ -37,26 +34,26 @@ class PixelCNNLayer_up(nn.Layer):
         return u_list, ul_list
 
 
-class PixelCNNLayer_down(nn.Layer):
-    def __init__(self, nr_resnet, nr_filters, resnet_nonlinearity):
-        super(PixelCNNLayer_down, self).__init__()
-        self.nr_resnet = nr_resnet
-        # stream from pixels above
-        self.u_stream  = nn.LayerList([gated_resnet(nr_filters, down_shifted_conv2d, 
-                                        resnet_nonlinearity, skip_connection=1) 
-                                            for _ in range(nr_resnet)])
+# class PixelCNNLayer_down(nn.Layer):
+#     def __init__(self, nr_resnet, nr_filters, resnet_nonlinearity):
+#         super(PixelCNNLayer_down, self).__init__()
+#         self.nr_resnet = nr_resnet
+#         # stream from pixels above
+#         self.u_stream  = nn.LayerList([gated_resnet(nr_filters, down_shifted_conv2d, 
+#                                         resnet_nonlinearity, skip_connection=1) 
+#                                             for _ in range(nr_resnet)])
         
-        # stream from pixels above and to thes left
-        self.ul_stream = nn.LayerList([gated_resnet(nr_filters, down_right_shifted_conv2d, 
-                                        resnet_nonlinearity, skip_connection=2) 
-                                            for _ in range(nr_resnet)])
+#         # stream from pixels above and to thes left
+#         self.ul_stream = nn.LayerList([gated_resnet(nr_filters, down_right_shifted_conv2d, 
+#                                         resnet_nonlinearity, skip_connection=2) 
+#                                             for _ in range(nr_resnet)])
 
-    def forward(self, u, ul, u_list, ul_list):
-        for i in range(self.nr_resnet):
-            u  = self.u_stream[i](u, a=u_list.pop())
-            ul = self.ul_stream[i](ul, a=paddle.cat((u, ul_list.pop()), 1))
+#     def forward(self, u, ul, u_list, ul_list):
+#         for i in range(self.nr_resnet):
+#             u  = self.u_stream[i](u, a=u_list.pop())
+#             ul = self.ul_stream[i](ul, a=paddle.cat((u, ul_list.pop()), 1))
         
-        return u, ul
+#         return u, ul
 
 class PixelCNNLayer_down(nn.Layer):
     def __init__(self, nr_resnet, nr_filters, resnet_nonlinearity):
@@ -123,69 +120,73 @@ class PixelCNN(nn.Layer):
                                             filter_size=(2,1), shift_output_right=True)])
         num_mix = 3 if self.input_channels == 1 else 10
         self.nin_out = nin(nr_filters, num_mix * nr_logistic_mix)
+        #########################################
+        #print(self.nin_out)
         self.init_padding = None
 
     def forward(self, x, sample=False):
-        # similar as done in the tf repo :  
-        if self.init_padding is None and not sample: 
-            xs = [int(y) for y in x.shape]
-            x1 = paddle.ones([xs[0], 1, xs[2], xs[3]])
-            padding = paddle.create_parameter(shape=x1.shape, dtype=str(x1.numpy().dtype),
-                                            default_initializer=paddle.nn.initializer.Assign(x1))
-            padding.stop_gradient = True
-            # self.init_padding = padding.cuda() if x.is_cuda else padding
-            self.init_padding = padding
-        
-        if sample : 
-            xs = [int(y) for y in x.shape]
-            x2 = paddle.ones([xs[0], 1, xs[2], xs[3]])
-            padding = paddle.create_parameter(shape= x2.shape, dtype=str(x2.numpy().dtype),
-                                            default_initializer=paddle.nn.initializer.Assign(x2))
-            padding.stop_gradient = True
-            # padding = padding.cuda() if x.is_cuda else padding
-            x = paddle.concat((x, padding), 1)
+            # similar as done in the tf repo :  
+            if self.init_padding is None and not sample: 
+                xs = [int(y) for y in x.shape]
+                x1 = paddle.ones([xs[0], 1, xs[2], xs[3]])
+                padding = paddle.create_parameter(shape=x1.shape, dtype=str(x1.numpy().dtype),
+                                                default_initializer=paddle.nn.initializer.Assign(x1))
+                padding.stop_gradient = True
+                # self.init_padding = padding.cuda() if x.is_cuda else padding
+                self.init_padding = padding
+            
+            if sample : 
+                xs = [int(y) for y in x.shape]
+                x2 = paddle.ones([xs[0], 1, xs[2], xs[3]])
+                padding = paddle.create_parameter(shape= x2.shape, dtype=str(x2.numpy().dtype),
+                                                default_initializer=paddle.nn.initializer.Assign(x2))
+                padding.stop_gradient = True
+                # padding = padding.cuda() if x.is_cuda else padding
+                x = paddle.concat((x, padding), 1)
 
-        ###      UP PASS    ###
-        x = x if sample else paddle.concat((x, self.init_padding), 1)
-        u_list  = [self.u_init(x)]
-        ul_list = [self.ul_init[0](x) + self.ul_init[1](x)]
-        for i in range(3):
-            # resnet block
-            u_out, ul_out = self.up_layers[i](u_list[-1], ul_list[-1])
-            u_list  += u_out
-            ul_list += ul_out
+            
+            ###      UP PASS    ###
+            x = x if sample else paddle.concat((x, self.init_padding), 1)
+            #print(x)
+            
+            u_list  = [self.u_init(x)]
+            ul_list = [self.ul_init[0](x) + self.ul_init[1](x)]
+            for i in range(3):
+                # resnet block
+                u_out, ul_out = self.up_layers[i](u_list[-1], ul_list[-1])
+                u_list  += u_out
+                ul_list += ul_out
 
-            if i != 2: 
-                # downscale (only twice)
-                u_list  += [self.downsize_u_stream[i](u_list[-1])]
-                ul_list += [self.downsize_ul_stream[i](ul_list[-1])]
-        print('up passed')
+                if i != 2: 
+                    # downscale (only twice)
+                    u_list  += [self.downsize_u_stream[i](u_list[-1])]
+                    ul_list += [self.downsize_ul_stream[i](ul_list[-1])]
 
-        ###    DOWN PASS    ###
-        u  = u_list.pop()
-        ul = ul_list.pop()
-        
-        for i in range(3):
-            # resnet block
-            u, ul = self.down_layers[i](u, ul, u_list, ul_list)
+            ###    DOWN PASS    ###
+            u  = u_list.pop()
+            ul = ul_list.pop()
+            
+            for i in range(3):
+                # resnet block
+                u, ul = self.down_layers[i](u, ul, u_list, ul_list)
 
-            # upscale (only twice)
-            if i != 2 :
-                u  = self.upsize_u_stream[i](u)
-                ul = self.upsize_ul_stream[i](ul)
+                # upscale (only twice)
+                if i != 2 :
+                    u  = self.upsize_u_stream[i](u)
+                    ul = self.upsize_ul_stream[i](ul)
 
-        x_out = self.nin_out(F.elu(ul))
+            x_out = self.nin_out(F.elu(ul))
 
-        assert len(u_list) == len(ul_list) == 0, pdb.set_trace()
+            assert len(u_list) == len(ul_list) == 0, pdb.set_trace()
 
-        return x_out
+            return x_out
 
 if __name__ == '__main__':
     ''' testing loss with tf version '''
     # np.random.seed(1)
-    # xx_t = (np.random.rand(15, 32, 32, 3) * 3).astype('float32')
+    # xx_t = (np.random.rand(15, 32, 32, 100) * 3).astype('float32')
     # yy_t  = np.random.uniform(-1, 1, size=(15, 32, 32, 3)).astype('float32')
-    # x3 = paddle.to_tensor(xx_t)
+    # x3 = (paddle.to_tensor(xx_t))
     # x_t = paddle.create_parameter(shape=x3.shape,dtype=str(x3.numpy().dtype),
     #                     default_initializer=paddle.nn.initializer.Assign(x3))
     # x_t.stop_gradient = True
@@ -193,15 +194,18 @@ if __name__ == '__main__':
     # y_t = paddle.create_parameter(shape=x4.shape,dtype=str(x4.numpy().dtype),
     #                     default_initializer=paddle.nn.initializer.Assign(x4))
     # y_t.stop_gradient = True
+    # print(y_t.shape,x_t.shape,'666666')
     # loss = discretized_mix_logistic_loss(y_t, x_t)
    
     ''' testing model and deconv dimensions '''
-    x = paddle.uniform(paddle.to_tensor([32, 3, 32, 32]))
-#     x5= x.cpu()
-#     xv = paddle.create_parameter(shape=x5.shape,dtype=str(x5.numpy().dtype),
-#                         default_initializer=paddle.nn.initializer.Assign(x5))
-#     xv.stop_gradient = True
-#     ds = down_shifted_deconv2d(3, 40, stride=(2,2))
+
+    #x =paddle.cuda_env.FloatTensor(32, 3, 32, 32).uniform_(-1., 1.)
+    x =paddle.uniform(paddle.to_tensor([32, 3, 32, 32]))
+    x5= x.cpu()
+    xv = paddle.create_parameter(shape=x5.shape,dtype=str(x5.numpy().dtype),
+                        default_initializer=paddle.nn.initializer.Assign(x5))
+    xv.stop_gradient = True
+    ds = down_shifted_deconv2d(3, 40, stride=(2,2))
 
     x_v = paddle.create_parameter(shape=x.shape,dtype=str(x.numpy().dtype),
                         default_initializer=paddle.nn.initializer.Assign(x))
@@ -209,10 +213,9 @@ if __name__ == '__main__':
 
     ''' testing loss compatibility '''
     model = PixelCNN(nr_resnet=3, nr_filters=100, input_channels=x.shape[1])
-    # model = model.cuda()
+    #model = model.cuda()
     out = model(x_v)
-    reprod_logger.add("logits", out.cpu().detach().numpy())
-    reprod_logger.save("forward_paddle.npy")
     loss = discretized_mix_logistic_loss(x_v, out)
+    #print('loss : %s' % loss.data[0])
+    print('777')
     print('loss : %s' % loss.detach().cpu().numpy()[0])
-
