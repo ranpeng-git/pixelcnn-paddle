@@ -1,7 +1,7 @@
 ### PixelCNN
 
 这是PixelCNN 的paddle实现，如下文所述：  
-[论文]（https://paperswithcode.com/paper/conditional-image-generation-with-pixelcnn）  
+[论文]（https://paperswithcode.com/paper/conditional-image-generation-with-pixelcnn ）
 PixelCNN是一类强大的生成模型，具有易处理的可能性，也很容易从中采样。核心卷积神经网络计算一个像素值的概率分布，条件是它左侧和上方的像素值。  
 
 来自模型的样本（左）和来自以cifar-10类标签为条件的模型样本（右）：  
