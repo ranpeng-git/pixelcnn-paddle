@@ -56,5 +56,4 @@ target:NLL 3.03
 
 [train.log](https://github.com/adreamerof/PixelCNN/blob/master/train_paddle.log):test loss : 3.0277796002371877
 
-
-
+一个epoch进行一次test，输出loss，无eval文件。
