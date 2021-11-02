@@ -14,7 +14,7 @@ This repository contains a Paddle implementation of PixelCNN in the paper "Condi
 
 1、具有多个GPU的机器  
 2、python3  
-3、paddle2.2.Orc、Numpy等包  
+3、paddle2.1.2、Numpy等包  
 
 ### Structure
 
