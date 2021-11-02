@@ -47,3 +47,14 @@ PixelCNN是一类强大的生成模型，具有易处理的可能性，也很容
 来自模型的样本（左）和来自以cifar-10类标签为条件的模型样本（右）：  
 ![image](https://user-images.githubusercontent.com/49580855/138794773-c5520048-b306-4135-990c-d0804e390423.png)
 
+## Results
+
+<br>paddle pretrained model：链接：https://pan.baidu.com/s/1oMm6qQzur6PtGLSZmKdWcQ 
+提取码：kn3j
+
+target:NLL 3.03
+
+[train.log](https://github.com/adreamerof/PixelCNN/blob/master/train_paddle.log):test loss : 3.0277796002371877
+
+
+
