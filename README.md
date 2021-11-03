@@ -39,6 +39,7 @@ git clone git@github.com:adreamerof/PixelCNN.git
 # start training
 python main.py          
 ```
+* 注意：paddle默认随机初始化参数可能有问题，建议load提供的初始化参数进行训练，链接：[https://pan.baidu.com/s/1244wsyFoChUQRuy3YP3Gzg]，提取码：bqj8
 
 ## Abstract
 
