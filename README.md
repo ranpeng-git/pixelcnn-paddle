@@ -23,8 +23,9 @@ This repository contains a Paddle implementation of PixelCNN in the paper "Condi
 ├── layers
 ├── model               #  model
 ├── save_image         
-├── utils               # define loss function  
-├── train.log           # the training log
+├── utils               # define loss function
+├── log
+│	├── train.log           # the training log
 ├── README.md
 ```
 
@@ -32,10 +33,6 @@ This repository contains a Paddle implementation of PixelCNN in the paper "Condi
 
 ```bash
 # clone this repo
-git clone git@github.com:adreamerof/PixelCNN.git
-```
-
-```bash
 # start training
 python main.py          
 ```
